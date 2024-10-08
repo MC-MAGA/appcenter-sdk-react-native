@@ -1,5 +1,14 @@
 # App Center SDK for React Native Change Log
 
+## Version 5.0.3 (Under development)
+
+## Version 5.0.2
+
+#### Android/iOS
+
+* **[Improvement] Move namespace definition from AndroidManifest.xml to build.gradle files.
+___
+
 ## Version 5.0.1
 
 ### App Center
