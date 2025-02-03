@@ -1,0 +1,157 @@
+trigger:
+- master
+- develop
+pr:
+- master
+- develop
+name: $(date:yyyyMMdd)$(rev:.r)
+variables:
+- name: BUILD_DIR
+  value: $(Build.ArtifactStagingDirectory)
+- group: AppCenter-SDK-Android Bintray and Maven
+resources:
+  repositories:
+  - repository: 1ESPipelineTemplates
+    type: git
+    name: 1ESPipelineTemplates/1ESPipelineTemplates
+    ref: refs/tags/release
+extends:
+  ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/master') }}:
+    template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
+  ${{ else }}:
+    template: v1/1ES.Unofficial.PipelineTemplate.yml@1ESPipelineTemplates
+  parameters:
+    pool:
+      name: Azure Pipelines
+      image: macos-latest
+      os: macOS
+    customBuildTags:
+    - ES365AIMigrationTooling-BulkMigrated
+    sdl:
+      sourceAnalysisPool: 1ES-PT-Windows-2022
+      eslint:
+        enableExclusions: true
+        exclusionPatterns: |
+          TestApp/
+    stages:
+    - stage: stage
+      jobs:
+      - job: Phase_1
+        displayName: MacOS
+        cancelTimeoutInMinutes: 1
+        templateContext:
+          sdl:
+            codeql:
+              language: javascript, java
+          outputs:
+          - output: pipelineArtifact
+            displayName: 'Publish Artifact: Release'
+            targetPath: $(Build.ArtifactStagingDirectory)/com/microsoft
+            artifactName: Release
+        steps:
+        - checkout: self
+          clean: true
+          submodules: recursive
+          fetchTags: false
+        - task: DownloadSecureFile@1
+          displayName: Download GPG-key
+          inputs:
+            secureFile: 98b107ca-fab1-42c0-819d-2871c022869c
+        - task: Bash@3
+          displayName: Configure Maven
+          inputs:
+            targetType: filePath
+            filePath: ./scripts/put-maven-secrets-gradle.sh
+            arguments: '"$(MAVEN_USER)" "$(MAVEN_KEY)" "$(GDP_SIGNING_KEY_ID)" "$(Agent.TempDirectory)/appcenter-gpg-key.gpg" "$(GDP_KEY_PASSWORD)"'
+            failOnStderr: true
+        - task: JavaToolInstaller@0
+          inputs:
+            versionSpec: '11'
+            jdkArchitectureOption: 'x64'
+            jdkSourceOption: 'PreInstalled'
+          displayName: 'Use Java 11'
+        - task: Gradle@1
+          displayName: Gradle publish to Maven local
+          inputs:
+            gradleWrapperFile: './AppCenterReactNativeShared/android/gradlew'
+            tasks: publish
+            publishJUnitResults: false
+            workingDirectory: './AppCenterReactNativeShared/android'
+
+    - stage: PublishAzureMaven
+      condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+      dependsOn: Stage
+      pool:
+        name: Azure Pipelines
+        image: macos-latest
+        os: macOS
+      variables:
+        "agent.source.skip": true
+      jobs:
+      - job: UploadArtifacts
+        steps:
+        - task: DownloadPipelineArtifact@2
+          displayName: Download Build Artifacts
+          inputs:
+            artifactName: Release
+            targetPath: '$(Agent.BuildDirectory)/Release'
+        - task: MavenAuthenticate@0
+          displayName: 'Maven Authenticate'
+          inputs:
+            artifactsFeeds: AppCenter
+        - task: Bash@3
+          displayName: Upload files to Azure Artifacts
+          inputs:
+            targetType: 'inline'
+            script: |
+              VERSION=$(basename $(Agent.BuildDirectory)/Release/appcenter/reactnative/appcenter-react-native/*/)
+              ARTIFACTS_DIR="$(Agent.BuildDirectory)/Release/appcenter/reactnative/appcenter-react-native/$VERSION"
+              ARTIFACT_ID="appcenter-react-native"
+              ARTIFACT_FILE_BASE="$ARTIFACTS_DIR/$ARTIFACT_ID-$VERSION"
+
+              mvn deploy:deploy-file -DgeneratePom=false \
+                  -Durl=$(AZURE_REPO) \
+                  -Dfile=$ARTIFACT_FILE_BASE.aar \
+                  -Dfiles=$ARTIFACT_FILE_BASE.pom,$ARTIFACT_FILE_BASE-sources.jar \
+                  -Dtypes=pom,jar \
+                  -Dclassifiers=pom,sources \
+                  -DgroupId=com.microsoft.appcenter.reactnative \
+                  -DartifactId=$ARTIFACT_ID \
+                  -Dversion=$VERSION-${BUILD_SOURCEVERSION:0:7} \
+                  -DrepositoryId=AppCenter \
+                  -e
+
+    - stage: APIScan
+      condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+      dependsOn: Stage
+      pool:
+        name: 1ES-PT-Windows-2022
+        os: windows
+      variables:
+        "agent.source.skip": true
+      jobs:
+      - job: APIScan
+        steps:
+        - task: DownloadPipelineArtifact@2
+          displayName: Download Build Artifacts for APIScan
+          inputs:
+            artifactName: Release
+            targetPath: '$(Agent.BuildDirectory)/Release'
+        - task: AzureKeyVault@2
+          inputs:
+            azureSubscription: 'AC - Dev Infra & Build Pool'
+            KeyVaultName: 'mobile-center-sdk'
+            SecretsFilter: 'appcenter-sdk-managed-identity-clientid'
+            RunAsPreJob: false
+        - task: APIScan@2
+          displayName: 'Run APIScan'
+          inputs:
+            softwareFolder: '$(Agent.BuildDirectory)\Release'
+            softwareName: 'appcenter-sdk-react-native'
+            softwareVersionNum: '$(Build.BuildId)'
+            isLargeApp: false
+            toolVersion: 'Latest'
+            verbosityLevel: verbose
+          condition: and(succeeded(), ne(variables['DisableAPIScan'], 'true'))
+          env:
+            AzureServicesAuthConnectionString: 'runAs=App;AppId=$(appcenter-sdk-managed-identity-clientid)'
