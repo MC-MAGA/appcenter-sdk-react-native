@@ -18,7 +18,7 @@ variables:
 - name: EOCompliance-Mac
   value: true
 - name: XCODE_PATH
-  value: /Applications/Xcode_13.2.1.app/Contents/Developer
+  value: /Applications/Xcode_14.3.1.app/Contents/Developer
 extends:
   ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/master') }}:
     template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
@@ -27,7 +27,7 @@ extends:
   parameters:
     pool:
       name: Azure Pipelines
-      image: macos-latest
+      image: macos-13
       os: macOS
     customBuildTags:
     - ES365AIMigrationTooling-BulkMigrated
@@ -37,8 +37,6 @@ extends:
         enableExclusions: true
         exclusionPatterns: |
           TestApp/
-          TestApp34/
-          DemoApp/
         credscan:
           suppressionsFile: $(Build.SourcesDirectory)/.config/CredScanSuppressions.json
     stages:
@@ -48,6 +46,9 @@ extends:
         displayName: MacOs
         cancelTimeoutInMinutes: 1
         templateContext:
+          sdl:
+            codeql:
+              language: javascript
           outputs:
           - output: pipelineArtifact
             displayName: 'Publish Artifact: framework'
@@ -85,6 +86,36 @@ extends:
             SourceFolder: $(Build.SourcesDirectory)/AppCenterReactNativeShared/Products/
             Contents: AppCenter-SDK-ReactNative-iOS-Pod-*.zip
             TargetFolder: $(Build.ArtifactStagingDirectory)
+        - task: CopyFiles@2
+          displayName: Copy podspec
+          inputs:
+            SourceFolder: $(Build.SourcesDirectory)/AppCenterReactNativeShared/Products/
+            Contents: AppCenterReactNativeShared.podspec
+            TargetFolder: $(Build.ArtifactStagingDirectory)
+      - job: collectVersionInfo
+        displayName: Version Information
+        templateContext:
+          sdl:
+            codeql:
+              language: javascript
+          outputs:
+          - output: pipelineArtifact
+            displayName: 'Publish Version Information'
+            targetPath: '$(Build.ArtifactStagingDirectory)/Info'
+            artifactName: Info
+            sbomEnabled: false
+        steps:
+        - task: Bash@3
+          displayName: 'Collect Version and Commit Information'
+          inputs:
+            targetType: 'inline'
+            script: |
+              VERSION=$(grep -E '"version":' appcenter/package.json | awk -F '"' '{print $4}')
+              mkdir -p $(Build.ArtifactStagingDirectory)/Info
+              echo "Version: $VERSION"
+              echo "Commit: $BUILD_SOURCEVERSION"
+              echo $VERSION > $(Build.ArtifactStagingDirectory)/Info/VERSION    
+              echo $BUILD_SOURCEVERSION > $(Build.ArtifactStagingDirectory)/Info/COMMIT
 
     - stage: APIScan
       dependsOn: Stage
